@@ -27,20 +27,33 @@ st.set_page_config(
 # ==========================================
 def read_single_csv(file_obj, filename: str) -> pd.DataFrame:
     """
-    Reads a CSV as raw data (ignoring headers) to force a direct copy-paste stack.
+    Reads a CSV as raw data, removes entirely blank rows/columns, 
+    and forces a direct copy-paste stack.
     """
     try:
-        # header=None tells pandas to treat the actual column names as just another row of data
-        # dtype=str ensures it just copies the text exactly as it is without trying to interpret it
+        # 1. Read raw data (treating headers as just another row)
         df = pd.read_csv(file_obj, header=None, dtype=str)
         
-        # Rename the columns to generic names (Column_1, Column_2, etc.) so they stack perfectly
+        # 2. REMOVE GHOST DATA: Drop columns and rows that are 100% empty
+        # how='all' ensures it only drops if EVERY single cell in that row/column is blank
+        df.dropna(axis=1, how='all', inplace=True)
+        df.dropna(axis=0, how='all', inplace=True)
+        
+        # If the file was completely empty, skip it
+        if df.empty:
+            return None
+            
+        # 3. Rename the surviving columns to generic names so they stack perfectly
         df.columns = [f"Column_{i+1}" for i in range(len(df.columns))]
         
-        # Insert the filename as the very first column (Column A)
+        # 4. Insert the filename as the very first column (Column A)
         df.insert(0, 'Source_File', filename)
         
         return df
+        
+    except pd.errors.EmptyDataError:
+        # Silently skip files that contain absolutely zero bytes
+        return None
     except Exception as e:
         st.error(f"Error reading file '{filename}': {e}")
         return None
@@ -63,7 +76,7 @@ def process_zip_file(zip_file_obj) -> list:
 def process_uploaded_files(uploaded_files) -> pd.DataFrame:
     all_dfs = []
     
-    progress_bar = st.progress(0, text="Copying and pasting data...")
+    progress_bar = st.progress(0, text="Copying, cleaning, and pasting data...")
     total = len(uploaded_files)
     
     for i, file in enumerate(uploaded_files):
@@ -82,15 +95,13 @@ def process_uploaded_files(uploaded_files) -> pd.DataFrame:
     if not all_dfs:
         return None
         
-    # Concatenate purely by position. 
-    # If Sheet 1 has 10 columns and Sheet 2 has 12 columns, 
-    # they will simply stack starting from Column B.
+    # Concatenate purely by position.
     combined_df = pd.concat(all_dfs, ignore_index=True)
     return combined_df
 
 @st.cache_data(show_spinner=False)
 def convert_df_to_csv(df: pd.DataFrame) -> bytes:
-    # header=False prevents writing "Source_File, Column_1, Column_2..." into the final output
+    # header=False prevents writing "Source_File, Column_1..." into the final output
     return df.to_csv(index=False, header=False).encode('utf-8')
 
 # ==========================================
@@ -98,7 +109,7 @@ def convert_df_to_csv(df: pd.DataFrame) -> bytes:
 # ==========================================
 def main():
     st.title("📋 Raw CSV Stacker (Direct Copy-Paste)")
-    st.markdown("Upload files to strictly stack them side-by-side. **Column A will be the filename**, and everything else is just copy-pasted starting from Column B.")
+    st.markdown("Upload files to strictly stack them side-by-side. **Blank rows/columns are ignored**, and **Column A will be the filename.** Everything else is just copy-pasted starting from Column B.")
 
     uploaded_files = st.file_uploader("Upload CSV or ZIP files", type=['csv', 'zip'], accept_multiple_files=True)
     
@@ -108,12 +119,16 @@ def main():
             return
             
         st.session_state.combined_df = process_uploaded_files(uploaded_files)
-        st.success("Data stacked!")
+        st.success("Data stacked and cleaned of empty rows!")
 
     if 'combined_df' in st.session_state and st.session_state.combined_df is not None:
         df = st.session_state.combined_df
         
-        st.metric("Total Rows Copied", len(df))
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Total Real Rows Copied", f"{len(df):,}")
+        with col2:
+            st.metric("Total Columns Wide", f"{len(df.columns):,}")
         
         st.dataframe(df.head(100), use_container_width=True)
         
